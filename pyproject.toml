@@ -1,5 +1,5 @@
 [project]
-name = "template-analysis-uv"
+name = "szabo-lab-follicle-classification"
 version = "0.1.0"
 description = "Template for analysis projects using uv"
 readme = "README.md"

@@ -618,7 +618,7 @@ wheels = [
 ]
 
 [[package]]
-name = "template-analysis-uv"
+name = "szabo-lab-follicle-classification"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

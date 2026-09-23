@@ -1,8 +1,3 @@
-from shared import core_logic
+from shared import helper
 
-
-def main():
-    print(core_logic.main())
-
-if __name__ == "__main__":
-    main()
+helper.copy_images_from_aperio("../data/Dataset01/image_list.csv", "../data/Dataset01")
