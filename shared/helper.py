@@ -1,9 +1,25 @@
 import csv
-from pathlib import Path
 import shutil
+from pathlib import Path
+
+import numpy as np
+import skimage
+from openslide import OpenSlide
+from PIL import Image
+from tqdm import tqdm
 
 
 def copy_images_from_aperio(aperio_csv_path, destination_folder):
+    """
+    Copy images from the remote folder using information from an Aperio-generated CSV.
+
+    Parameters
+    ----------
+    aperio_csv_path : str or path-like
+        Path to the Aperio-generated CSV file.
+    destination_folder : str or path-like
+        Path to the output folder.
+    """
 
     aperio_csv_path = Path(aperio_csv_path)
 
@@ -16,3 +32,131 @@ def copy_images_from_aperio(aperio_csv_path, destination_folder):
         for row in csv_reader:
             print(row["File Location"])
             shutil.copy(row["File Location"], destination_folder)
+
+
+def detect_and_crop_tissue(
+    input_path, output_path, ds_level=1, padding=50, max_link_distance_px=37
+):
+    """
+    Detect tissue in slide and crop images.
+
+    This function identifies tissue slices in the whole slide images, then generates a
+    series of images, cropped to just the tissue. To help with tissue slices which may
+    be broken or fragmented, the algorithm joins nearby objects together (determined by
+    the max_link_distance_px).
+
+    To help conserve memory, the tissue identification is done at the specified
+    pyramid level, with an additional 4x downsampling. For example, if the pyramid
+    resolution specified was downsampled by 4x, the total downsampling is actually 4 x 4
+    = 16x smaller. The smaller resolution is only used for the tissue detection.
+
+    Parameters
+    ----------
+    input_path : str or path-like
+        Path to directory containing slide images
+    output_path : str or path-like
+        Path to output directory
+    ds_level : int, optional
+        Pyramid level to read for tissue identification, by default 1
+    padding : int, optional
+        Number of pixels (full resolution) to pad the detected tissue region, by default 50
+    max_link_distance_px : int, optional
+        Distance in pixels (downsampled) to link objects, by default 37
+    """
+
+    downsample_factor = 4
+
+    input_path = Path(input_path)
+
+    output_path = Path(output_path)
+    output_path.mkdir(exist_ok=True, parents=True)
+
+    slide_list = list(input_path.glob("*.svs"))
+
+    # Detect the tissue using one of the lower resolutions
+
+    footprint = skimage.morphology.disk(max_link_distance_px)
+
+    for slide_path in tqdm(slide_list):
+        slide = OpenSlide(slide_path)
+
+        slide_width, slide_height = slide.dimensions
+
+        downsample = slide.level_downsamples[ds_level]
+        level_dim = slide.level_dimensions[ds_level]
+
+        ds_img = (slide.read_region((0, 0), ds_level, level_dim)).convert("L")
+
+        # Downsample further
+        target_width = level_dim[0] // downsample_factor
+        target_height = level_dim[1] // downsample_factor
+        mini_img = ds_img.resize(
+            (target_width, target_height), Image.Resampling.BILINEAR
+        )
+
+        image_array = np.array(mini_img)
+
+        tissue_mask = image_array < 180
+        tissue_mask = skimage.morphology.remove_small_objects(
+            tissue_mask, max_size=1500
+        )
+
+        # Try to join nearby fragments together
+        tissue_mask = skimage.morphology.closing(tissue_mask, footprint)
+
+        # Find the individual tissue pieces
+        tissue_labels = skimage.measure.label(tissue_mask)
+        tissue_data = skimage.measure.regionprops(tissue_labels)
+
+        # if len(tissue_data) > max_objects:
+        #     centroids = np.array([prop.centroid for prop in tissue_data])
+
+        #     clusters = AgglomerativeClustering(
+        #         n_clusters=max_objects, metric="euclidean", linkage="ward"
+        #     )
+
+        #     cluster_labels = clusters.fit_predict(centroids)
+
+        #     final_labels = np.zeros_like(tissue_labels)
+
+        #     for idx, prop in enumerate(tissue_data):
+        #         new_label = cluster_labels[idx] + 1
+
+        #         final_labels[tissue_labels == prop.label] = new_label
+
+        #     tissue_labels = final_labels
+
+        # final_props = skimage.measure.regionprops(tissue_labels)
+
+        # Crop and export the images
+        base_output_name = slide_path.stem
+        for idx, prop in enumerate(tissue_data):
+            # bbox = (min_row, min_col, max_row, max_col)
+            ymin, xmin, ymax, xmax = prop.bbox
+
+            # Bump the size a little
+            x0 = max(0, int(xmin * downsample * downsample_factor) - padding)
+            y0 = max(0, int(ymin * downsample * downsample_factor) - padding)
+            x1 = min(int(xmax * downsample * downsample_factor) + padding, slide_width)
+            y1 = min(int(ymax * downsample * downsample_factor) + padding, slide_height)
+
+            # Read in the image region
+            cropped = slide.read_region(
+                (x0, y0),
+                0,
+                (x1 - x0, y1 - y0),
+            )
+
+            # To fix the white balance, convert back to RGBA, then paste it over a white background
+            white_bg = Image.new("RGB", cropped.size, (255, 255, 255))
+
+            white_bg.paste(cropped, (0, 0), cropped)
+
+            white_bg.save(output_path / f"{base_output_name}_region{idx}.png")
+
+        # overlay = skimage.segmentation.mark_boundaries(image_array, tissue_labels)
+
+        # from matplotlib import pyplot as plt
+
+        # plt.imshow(overlay)
+        # plt.show()

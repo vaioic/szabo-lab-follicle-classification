@@ -11,7 +11,15 @@ dependencies = [
     "numpy",
     "scikit-image",
     "matplotlib",
-    "tifffile"
+    "tifffile",
+    "torch>=2.14.1",
+    "torchvision>=0.29.1",
+    "pandas>=3.0.6",
+    "tensorboard>=2.21.0",
+    "openslide-bin>=4.0.1.2",
+    "openslide-python>=1.4.6",
+    "scikit-learn>=1.9.1",
+    "tqdm>=4.70.1",
 ]
 
 [project.optional-dependencies]
