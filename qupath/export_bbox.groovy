@@ -8,6 +8,13 @@ if (imageData == null) {
     return
 }
 
+// Check if there are any annotations before proceeding
+def annotations = getAnnotationObjects()
+if (annotations.isEmpty()) {
+    println("Skipping export: No annotations found in image.")
+    return
+}
+
 // 1. Create and verify the "export" folder inside the project base directory
 def exportDirPath = buildFilePath(PROJECT_BASE_DIR, "export")
 def exportDir = new File(exportDirPath)
