@@ -35,7 +35,7 @@ def copy_images_from_aperio(aperio_csv_path, destination_folder):
 
 
 def detect_and_crop_tissue(
-    input_path, output_path, ds_level=1, padding=50, max_link_distance_px=37
+    input_path, output_path, downsample=16, padding=50, max_link_distance_px=37
 ):
     """
     Detect tissue in slide and crop images.
@@ -64,8 +64,6 @@ def detect_and_crop_tissue(
         Distance in pixels (downsampled) to link objects, by default 37
     """
 
-    downsample_factor = 4
-
     input_path = Path(input_path)
 
     output_path = Path(output_path)
@@ -82,17 +80,12 @@ def detect_and_crop_tissue(
 
         slide_width, slide_height = slide.dimensions
 
-        downsample = slide.level_downsamples[ds_level]
-        level_dim = slide.level_dimensions[ds_level]
+        img = (slide.read_region((0, 0), 0, slide.dimensions)).convert("L")
 
-        ds_img = (slide.read_region((0, 0), ds_level, level_dim)).convert("L")
-
-        # Downsample further
-        target_width = level_dim[0] // downsample_factor
-        target_height = level_dim[1] // downsample_factor
-        mini_img = ds_img.resize(
-            (target_width, target_height), Image.Resampling.BILINEAR
-        )
+        # Downsample the image for tissue detection
+        target_width = slide_width // downsample
+        target_height = slide_height // downsample
+        mini_img = img.resize((target_width, target_height), Image.Resampling.BILINEAR)
 
         image_array = np.array(mini_img)
 
@@ -108,26 +101,6 @@ def detect_and_crop_tissue(
         tissue_labels = skimage.measure.label(tissue_mask)
         tissue_data = skimage.measure.regionprops(tissue_labels)
 
-        # if len(tissue_data) > max_objects:
-        #     centroids = np.array([prop.centroid for prop in tissue_data])
-
-        #     clusters = AgglomerativeClustering(
-        #         n_clusters=max_objects, metric="euclidean", linkage="ward"
-        #     )
-
-        #     cluster_labels = clusters.fit_predict(centroids)
-
-        #     final_labels = np.zeros_like(tissue_labels)
-
-        #     for idx, prop in enumerate(tissue_data):
-        #         new_label = cluster_labels[idx] + 1
-
-        #         final_labels[tissue_labels == prop.label] = new_label
-
-        #     tissue_labels = final_labels
-
-        # final_props = skimage.measure.regionprops(tissue_labels)
-
         # Crop and export the images
         base_output_name = slide_path.stem
         for idx, prop in enumerate(tissue_data):
@@ -135,10 +108,10 @@ def detect_and_crop_tissue(
             ymin, xmin, ymax, xmax = prop.bbox
 
             # Bump the size a little
-            x0 = max(0, int(xmin * downsample * downsample_factor) - padding)
-            y0 = max(0, int(ymin * downsample * downsample_factor) - padding)
-            x1 = min(int(xmax * downsample * downsample_factor) + padding, slide_width)
-            y1 = min(int(ymax * downsample * downsample_factor) + padding, slide_height)
+            x0 = max(0, int(xmin * downsample) - padding)
+            y0 = max(0, int(ymin * downsample) - padding)
+            x1 = min(int(xmax * downsample) + padding, slide_width)
+            y1 = min(int(ymax * downsample) + padding, slide_height)
 
             # Read in the image region
             cropped = slide.read_region(

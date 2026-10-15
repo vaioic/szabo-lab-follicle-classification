@@ -102,4 +102,6 @@ Please review the Acknowledgement and Authorship Guidelines on [VAI's Core Techn
 ### v0.1.0 (TBD)
 * Initial commit with preliminary code
   ([OIC-343](https://varioic.atlassian.net/browse/OIC-343))
-* [ADDED] Helper function to copy data from an Aperio database
+* [NEW] Helper function to copy data from an Aperio database
+* [NEW] Helper function to detect and crop tissue regions from slide
+* [NEW] Code to train and predict follicle regions
