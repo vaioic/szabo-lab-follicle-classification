@@ -28,11 +28,6 @@ This project uses [uv](https://docs.astral.sh/uv/) to manage virtual environment
    uv sync
    ```
 
-4. Run the analysis
-   ```bash
-   uv run analysis/analysis_script.py
-   ```
-
 #### Using venv and pip
 
 1. Clone the repository
@@ -60,13 +55,25 @@ This project uses [uv](https://docs.astral.sh/uv/) to manage virtual environment
    python -m pip install -e .
    ```
 
-5. Run the analysis script
-   ```bash
-   python -m analysis.analysis_script
+### Training a model
 
-   # or
-   python analysis/analysis_script.py
-   ```
+See example script in [dev/train_model.py](dev/train_model.py).
+
+### Visualizing the training
+
+TensorBoard is included in the project. You can run TensorBoard using uv:
+
+```bash
+uv run python-m tensorboard.main --logdir="../models/"
+```
+
+or regular python in the activated environment:
+
+```bash
+python-m tensorboard.main --logdir="../models/"
+```
+
+Note: The log directory should contain runs in separate sub-folders.
 
 ## Issues
 

@@ -1,7 +1,11 @@
 import json
+from dataclasses import asdict, dataclass, fields, replace
+from datetime import datetime
 from pathlib import Path
+from warnings import warn
 
 import pandas as pd
+import skimage
 import torch
 import torchvision
 from openslide import OpenSlide
@@ -10,58 +14,140 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 
+@dataclass
+class TrainingConfig:
+    learning_rate: float = 0.001
+    batch_size: int = 2
+    momentum: float = 0.9
+    weight_decay: float = 0.0005
+    num_epochs: int = 15
+    num_classes: int = 2
+    shuffle: bool = True
+    anchor_sizes: tuple = (
+        (32,),
+        (64,),
+        (128,),
+        (320,),
+        (768,),
+    )
+    anchor_aspect_ratios: tuple = (0.5, 1.0, 2.0)
+    weights: str = "DEFAULT"
+
+
 class FollicleImageDataset(Dataset):
     """
+    Loads and formats annotations into a torch-compatible Dataset.
+
+    The input to the function should be the folder containing CSV-files created by
+    QuPath. The CSV-files should be named with the following pattern:
+    <filename>_bounding_boxes.csv. The function will automatically check that there is a
+    corresponding file named <filename>.png in image_folder.
+
     Note: The Faster-RCNN model requires:
      * images: List of images as a tensor [C, H, W]
      * targets: A list of dicts where each dictionary corresponds to the image in images
        * "boxes": [N, 4]
        * "labels": [N]
        * "image_id": unique integer specifying the image
+
+    Attributes
+    ----------
+    image_folder : str or Path
+        Path to directory containing the images.
+    annotation_folder : str or Path
+        Path to directory containing the CSV-files with bounding boxes.
+    make_classes_binary : bool, optional
+        If true, makes all classes = 1, by default False.
+    num_classes : int
+        Total number of classes (1 for binary, number of labels for multi-class).
+
+    Raises
+    ------
+    FileNotFoundError
+        No CSV-files were found in the annotation_folder.
+    FileNotFoundError
+        No images matching the annotation files were found in the image_folder.
     """
 
-    def __init__(self, image_paths, annotation_paths):
+    def __init__(self, image_folder, annotation_folder, make_classes_binary=False):
 
-        # Validate the inputs
-        if len(image_paths) != len(annotation_paths):
-            raise ValueError(
-                "The number of images does not match the number of annotation files."
+        # Validate the inputs are valid paths
+        image_folder = Path(image_folder)
+
+        annotation_folder = Path(annotation_folder)
+
+        list_annotation_files = list(annotation_folder.glob("*.csv"))
+
+        if not list_annotation_files:
+            raise FileNotFoundError(
+                f"{annotation_folder.stem}: No CSV files were found"
             )
 
-        self.image_paths = [Path(p) for p in image_paths]
-        self.image_names = [s.stem for s in self.image_paths]
-
-        # Read in the CSV-files
-        annotation_paths = [Path(p) for p in annotation_paths]
+        # Parse the annotations, checking to make sure there is data and that the image
+        # exists
         df_list = []
-        for idx, f in enumerate(annotation_paths):
-            curr_df = pd.read_csv(f)
-            curr_df["image_name"] = self.image_names[idx]
-            df_list.append(curr_df)
+        for f in list_annotation_files:
+            df_annotation = pd.read_csv(f)
 
-        self.df = pd.concat(df_list)
+            if df_annotation.empty:
+                warn(f"{f.stem}: No annotations detected. Skipping.")
+                continue
+
+            # Check that the image exists and append it to the list
+            image_fn = (f.stem).replace("_bounding_boxes", "")
+
+            image_path = image_folder / f"{image_fn}.png"
+
+            if not image_path.exists():
+                warn(f"{f.stem}: SVS-file missing. Skipping.")
+                continue
+
+            # Checks passed so append annotations and image path to properties
+            df_annotation["image_name"] = image_fn
+            df_annotation["image_path"] = image_path
+
+            df_list.append(df_annotation)
+
+        # Combine all the validated data as single list
+        if not df_list:
+            raise FileNotFoundError("No valid annotation or image files were found.")
+        else:
+            self.df = pd.concat(df_list)
+
+        # Convert classes to an ID
+        if not make_classes_binary:
+            unique_classes = sorted(self.df["Class"].unique())
+
+            self.class_to_idx = {
+                class_name: (idx + 1) for idx, class_name in enumerate(unique_classes)
+            }
+            self.df["class_id"] = self.df["Class"].map(self.class_to_idx)
+
+        else:
+            # This is primarily to train just an ROI proposer
+            self.class_to_idx = None
+            self.df["class_id"] = 1
+
+        # Get a list of the unique image names
+        self.image_paths = list(self.df["image_path"].unique())
 
     def __len__(self):
-        return len(self.image_names)
+        return len(self.image_paths)
 
     def __getitem__(self, idx):
 
-        img_path = self.image_paths[idx]
+        image_path = self.image_paths[idx]
 
-        img_name = self.image_names[idx]
+        # Get the annotations for the image
+        image_name = Path(image_path).stem
 
-        img = read_slide_image(img_path)
+        image_annotations = self.df[self.df["image_name"] == image_name]
 
-        # Filter annotations for the current image
-        image_annotations = self.df[self.df["image_name"] == img_name]
+        labels = image_annotations["class_id"].values
+        labels_tensor = torch.tensor(labels, dtype=torch.int64)
+
         boxes = image_annotations[["XMin", "YMin", "XMax", "YMax"]].values
-
-        raw_classes = image_annotations["Class"].values
-        int_classes = [2 if c == "No nucleus" else 1 for c in raw_classes]
-
-        # Convert to tensors
-        boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32)
-        labels_tensor = torch.as_tensor(int_classes, dtype=torch.int64)
+        boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
 
         target = {
             "boxes": boxes_tensor,
@@ -69,12 +155,23 @@ class FollicleImageDataset(Dataset):
             "image_id": torch.tensor([idx]),
         }
 
+        image = skimage.io.imread(image_path).copy()
+
         # Convert image to tensor (C, H, W)
-        img_tensor = torchvision.transforms.functional.to_tensor(img)
+        img_tensor = torchvision.transforms.functional.to_tensor(image)
         return img_tensor, target
 
+    @property
+    def num_classes(self):
 
-def get_model(num_classes, model="fasterrcnn-resnet50"):
+        if self.class_to_idx is None:
+            nc = 1
+        else:
+            nc = len(self.class_to_idx)
+        return nc
+
+
+def get_model(config: TrainingConfig, model="fasterrcnn-resnet50"):
     """
     Get torchvision model and update the model head.
 
@@ -93,46 +190,89 @@ def get_model(num_classes, model="fasterrcnn-resnet50"):
 
     match model.lower():
         case "fasterrcnn-resnet50":
+            from torchvision.models.detection.rpn import AnchorGenerator
+
+            anchor_generator = AnchorGenerator(
+                sizes=config.anchor_sizes,
+                aspect_ratios=(config.anchor_aspect_ratios,) * len(config.anchor_sizes),
+            )
+
             model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-                weights="DEFAULT"
+                weights="DEFAULT",
+                rpn_anchor_generator=anchor_generator,
             )
 
             # Update the model head to match the number of classes
             in_features = model.roi_heads.box_predictor.cls_score.in_features
 
-            model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+            model.roi_heads.box_predictor = FastRCNNPredictor(
+                in_features, config.num_classes
+            )
+            # model.rpn.head.reset_parameters()
 
     return model
 
 
-def train_follicle_detector(
-    image_paths,
-    annotation_paths,
-    output_dir,
-    num_epochs=15,
-    batch_size=2,
-    learning_rate=0.001,
+def train(
+    image_folder,
+    annotation_folder,
+    base_output_dir,
     save_every_n_epochs=5,
-    num_classes=2,
+    checkpoint_path=None,
+    **kwargs,
 ):
 
-    # Create the output directory
-    output_dir = Path(output_dir)
+    # Create the output directory. Note the output directory will be appended with a
+    # timesteamp.
+    base_output_dir = Path(base_output_dir)
+
+    output_dir = base_output_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create the log directory
     log_dir = output_dir / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Update the hyperparameters dataclass
+    config = TrainingConfig()
+    valid_fields = {f.name for f in fields(TrainingConfig)}
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_fields}
+    config = replace(config, **filtered_kwargs)
+
+    # Save the hyperparameters as a JSON-file
+    json_path = output_dir / "config.json"
+    with open(json_path, "w") as f:
+        json.dump(asdict(config), f, indent=4)
+    print(f"Configuration saved to JSON: {json_path}")
+
     # Initialize the TensorBoard SummaryWriter
     writer = SummaryWriter(log_dir=log_dir)
 
     # Load the data
-    dataset = FollicleImageDataset(image_paths, annotation_paths)
+    if config.num_classes == 2:
+        dataset = FollicleImageDataset(
+            image_folder, annotation_folder, make_classes_binary=True
+        )
+    else:
+        dataset = FollicleImageDataset(image_folder, annotation_folder)
+
+    # Save class mapping
+    if dataset.class_to_idx is not None:
+        # Invert {"Name": id} to {id: "Name"} for prediction lookup
+        idx_to_class = {str(idx): name for name, idx in dataset.class_to_idx.items()}
+    else:
+        # Binary case fallback
+        idx_to_class = {"1": "Follicle"}
+
+    class_map_path = output_dir / "class_mapping.json"
+    with open(class_map_path, "w") as f:
+        json.dump(idx_to_class, f, indent=2)
+    print(f"Class mapping saved to {class_map_path}")
+
     data_loader = DataLoader(
         dataset,
-        batch_size=batch_size,
-        shuffle=True,
+        batch_size=config.batch_size,
+        shuffle=config.shuffle,
         collate_fn=lambda x: tuple(zip(*x)),
     )
 
@@ -140,21 +280,31 @@ def train_follicle_detector(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize model
-    model = get_model(num_classes)
+    model = get_model(config)
+
+    if checkpoint_path is not None:
+        checkpoint_path = Path(checkpoint_path)
+
+        print(f"Loading weights from: {checkpoint_path}")
+        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+
     model.to(device)
 
     # Optimizer configuration
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
-        params, lr=learning_rate, momentum=0.9, weight_decay=0.0005
+        params,
+        lr=config.learning_rate,
+        momentum=config.momentum,
+        weight_decay=config.weight_decay,
     )
 
     # Training loop
     model.train()
-    for epoch in range(num_epochs):
+    for epoch in range(config.num_epochs):
         epoch_loss = 0
         for images, targets in data_loader:
-            images = list(image.to(device) for image in images)
+            images = [image.to(device) for image in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             # Forward pass
@@ -168,7 +318,7 @@ def train_follicle_detector(
             optimizer.step()
 
         avg_epoch_loss = epoch_loss / len(data_loader)
-        print(f"Epoch [{epoch + 1}/{num_epochs}] | Loss: {avg_epoch_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{config.num_epochs}] | Loss: {avg_epoch_loss:.4f}")
 
         # --- Log metrics to TensorBoard ---
         writer.add_scalar("Loss/train_epoch", avg_epoch_loss, epoch + 1)
@@ -177,12 +327,20 @@ def train_follicle_detector(
         )
 
         # Save regular checkpoints
-        if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == num_epochs:
+        if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == config.num_epochs:
             ckpt_path = output_dir / f"follicle_detector_epoch_{epoch + 1}.pth"
             torch.save(model.state_dict(), ckpt_path)
             print(f"-> Checkpoint saved: {ckpt_path}")
 
-    # Always close the writer when training completes
+    # Write hyperparameters after a successful run
+    final_metrics = {
+        "Loss/train_epoch": avg_epoch_loss,
+    }
+    hparams_dict = asdict(config)
+    hparams_dict["anchor_sizes"] = str(config.anchor_sizes)
+    hparams_dict["anchor_aspect_ratios"] = str(config.anchor_aspect_ratios)
+
+    writer.add_hparams(hparams_dict, final_metrics, run_name=".")
     writer.close()
 
     # Final model path
@@ -190,6 +348,29 @@ def train_follicle_detector(
     torch.save(model.state_dict(), final_path)
     print(f"Training complete. Final weights saved to {final_path}")
     return final_path
+
+
+def load_config_from_json(config_path):
+
+    config_path = Path(config_path)
+
+    with open(config_path, "r") as f:
+        data = json.load(f)
+
+    # Safety check in case we change the model parameters down the line
+    valid_fields = {f.name for f in fields(TrainingConfig)}
+    filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+
+    if "anchor_sizes" in filtered_data:
+        filtered_data["anchor_sizes"] = tuple(
+            tuple(item) for item in filtered_data["anchor_sizes"]
+        )
+    if "anchor_aspect_ratios" in filtered_data:
+        filtered_data["anchor_aspect_ratios"] = tuple(
+            filtered_data["anchor_aspect_ratios"]
+        )
+
+    return TrainingConfig(**filtered_data)
 
 
 def predict_follicles(model_path, image_paths, output_dir, confidence_thresh=0.5):
@@ -203,12 +384,27 @@ def predict_follicles(model_path, image_paths, output_dir, confidence_thresh=0.5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Look for class_mapping.json in the same directory as the model weights
+    class_map_path = model_path.parent / "class_mapping.json"
+    if class_map_path.exists():
+        with open(class_map_path, "r") as f:
+            idx_to_class = json.load(f)
+    else:
+        idx_to_class = {}
+        warn("class_mapping.json not found. Falling back to numeric class IDs.")
+
     # Load the model to get the number of classes
     checkpoint = torch.load(model_path, map_location=device)
-    num_classes = checkpoint["roi_heads.box_predictor.cls_score.weight"].shape[0]
+
+    # Load the model configuration
+    config_path = model_path.parent / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found at {config_path}")
+
+    config = load_config_from_json(config_path)
 
     # Build the model
-    model = get_model(num_classes)
+    model = get_model(config)
     model.load_state_dict(checkpoint)
     model.to(device)
     model.eval()
@@ -216,7 +412,7 @@ def predict_follicles(model_path, image_paths, output_dir, confidence_thresh=0.5
     results = {}
     with torch.no_grad():
         for img_path in image_paths:
-            img = read_slide_image(img_path)
+            img = skimage.io.imread(img_path)
             img_tensor = (
                 torchvision.transforms.functional.to_tensor(img).unsqueeze(0).to(device)
             )
@@ -225,50 +421,52 @@ def predict_follicles(model_path, image_paths, output_dir, confidence_thresh=0.5
             scores = predictions["scores"].cpu().numpy()
             keep = scores >= confidence_thresh
 
+            boxes = predictions["boxes"].cpu().numpy()[keep]
+            labels = predictions["labels"].cpu().numpy()[keep]
+            filtered_scores = scores[keep]
+
             results[img_path] = {
-                "boxes": predictions["boxes"].cpu().numpy()[keep],
-                "labels": predictions["labels"].cpu().numpy()[keep],
-                "scores": scores[keep],
+                "boxes": boxes,
+                "labels": labels,
+                "scores": filtered_scores,
             }
 
             all_features = []
-            for img_path, data in results.items():
-                for box, label, score in zip(
-                    data["boxes"], data["labels"], data["scores"]
-                ):
-                    xmin, ymin, xmax, ymax = box
+            for box, label, score in zip(boxes, labels, filtered_scores):
+                xmin, ymin, xmax, ymax = box
+                class_name = idx_to_class.get(str(label), f"Class_{label}")
 
-                    # QuPath expects closed polygon coordinates [x, y] forming a rectangle
-                    polygon_coords = [
-                        [float(xmin), float(ymin)],
-                        [float(xmax), float(ymin)],
-                        [float(xmax), float(ymax)],
-                        [float(xmin), float(ymax)],
-                        [float(xmin), float(ymin)],
-                    ]
+                polygon_coords = [
+                    [float(xmin), float(ymin)],
+                    [float(xmax), float(ymin)],
+                    [float(xmax), float(ymax)],
+                    [float(xmin), float(ymax)],
+                    [float(xmin), float(ymin)],
+                ]
 
-                    feature = {
-                        "type": "Feature",
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [polygon_coords],
-                        },
-                        "properties": {
-                            "object_type": "detection",
-                            "classification": f"Class_{label}",
-                            "confidence": float(score),
-                        },
-                    }
-                    all_features.append(feature)
+                feature = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [polygon_coords],
+                    },
+                    "properties": {
+                        "object_type": "annotation",
+                        "classification": class_name,
+                        "confidence": float(score),
+                    },
+                }
+                all_features.append(feature)
 
             # Construct the final GeoJSON FeatureCollection
             geojson_collection = {"type": "FeatureCollection", "features": all_features}
 
             output_fn = img_path.stem
-
             output_json_path = output_dir / f"{output_fn}.json"
+
             with open(output_json_path, "w") as f:
                 json.dump(geojson_collection, f, indent=2)
+
             print(f"GeoJSON successfully exported to {output_json_path}")
 
     return results

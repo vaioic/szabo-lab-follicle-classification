@@ -1,37 +1,57 @@
+from pathlib import Path
+
+import pytest
+import torch
+
 from shared.follicle_detector import FollicleImageDataset
 
-
-def test_FollicleImageDataset():
-
-    image_paths = [
-        "../data/Dataset01/raw/272940.svs",
-        "../data/Dataset01/raw/272941.svs",
-    ]
-
-    csv_paths = [
-        "../data/Dataset01/qupath/export/272940_bounding_boxes.csv",
-        "../data/Dataset01/qupath/export/272941_bounding_boxes.csv",
-    ]
-
-    ds = FollicleImageDataset(image_paths, csv_paths)
-
-    assert len(ds) == 2
+ANNOTATION_FOLDER = Path("../data/Dataset01/qupath_cropped/export")
+IMAGE_FOLDER = Path("../data/Dataset01/cropped")
 
 
-def test_FollicleImageDataset_getitem():
+@pytest.fixture(scope="module")
+def dataset():
+    """Initializes the standard dataset once per test module."""
+    return FollicleImageDataset(IMAGE_FOLDER, ANNOTATION_FOLDER)
 
-    image_paths = [
-        "../data/Dataset01/raw/272940.svs",
-        "../data/Dataset01/raw/272941.svs",
-    ]
 
-    csv_paths = [
-        "../data/Dataset01/qupath/export/272940_bounding_boxes.csv",
-        "../data/Dataset01/qupath/export/272941_bounding_boxes.csv",
-    ]
+@pytest.fixture(scope="module")
+def dataset_binary():
+    """Initializes the binary-class dataset once per test module."""
+    return FollicleImageDataset(
+        IMAGE_FOLDER, ANNOTATION_FOLDER, make_classes_binary=True
+    )
 
-    ds = FollicleImageDataset(image_paths, csv_paths)
 
-    X = ds[0]
+def test_FollicleImageDataset(dataset):
 
-    assert len(ds) == 2
+    # Get list of CSV-files in the test folder
+    files = list(ANNOTATION_FOLDER.glob("*.csv"))
+
+    # Check that the results are as expected
+    assert len(dataset) == len(files)
+    assert dataset.num_classes == 8
+
+
+def test_FollicleImageDataset_binary_classes(dataset_binary):
+
+    # Get list of CSV-files in the test folder
+    files = list(ANNOTATION_FOLDER.glob("*.csv"))
+
+    # Check that the results are as expected
+    assert len(dataset_binary) == len(files)
+    assert dataset_binary.num_classes == 1
+
+
+def test_FollicleImageDataset_getitem(dataset):
+
+    image, target = dataset[0]
+
+    assert torch.is_tensor(target["boxes"])
+    assert torch.is_tensor(target["labels"])
+    assert torch.is_tensor(target["image_id"])
+
+    assert image.ndim == 3
+    assert image.shape[0] == 3
+
+    assert image.dtype == torch.float32

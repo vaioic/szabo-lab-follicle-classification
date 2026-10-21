@@ -1,0 +1,28 @@
+from shared.follicle_detector import FollicleImageDataset
+
+annotation_path = "../data/Dataset01/qupath_cropped/export"
+image_folder = "../data/Dataset01/cropped"
+
+ds = FollicleImageDataset(image_folder, annotation_path)
+
+print(len(ds))
+
+print(ds.class_to_idx)
+
+print(ds.num_classes)
+
+# image, target = ds[0]
+
+# print(target)
+
+# print(image.shape)
+
+# import matplotlib.pyplot as plt
+
+# # img_tensor shape is (3, H, W)
+# # Permute to (H, W, 3) for matplotlib
+# img_np = image.permute(1, 2, 0).numpy()
+
+# plt.imshow(img_np)
+# plt.axis("off")
+# plt.show()
