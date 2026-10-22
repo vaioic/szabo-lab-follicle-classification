@@ -217,21 +217,32 @@ def train(
     image_folder,
     annotation_folder,
     base_output_dir,
+    model_name=None,
     save_every_n_epochs=5,
     checkpoint_path=None,
     **kwargs,
 ):
 
-    # Create the output directory. Note the output directory will be appended with a
-    # timesteamp.
+    # Create the output directory
     base_output_dir = Path(base_output_dir)
 
-    output_dir = base_output_dir / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Create the base log sub-directory
+    base_log_dir = base_output_dir / "runs"
 
-    # Create the log directory
-    log_dir = output_dir / "log"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Create the checkpoints directory - this should be unique
+    strDateTime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if model_name is None:
+        output_dir = base_output_dir / "checkpoints" / strDateTime
+    else:
+        output_dir = base_output_dir / "checkpoints" / (strDateTime + model_name)
+    output_dir.mkdir(parents=True, exist_ok=False)  # Throw error if it already exists
+
+    # Create the log directory with the same name
+    if model_name is None:
+        log_dir = base_log_dir / strDateTime
+    else:
+        log_dir = base_log_dir / (strDateTime + model_name)
+    log_dir.mkdir(parents=True, exist_ok=False)
 
     # Update the hyperparameters dataclass
     config = TrainingConfig()
@@ -317,14 +328,11 @@ def train(
             losses.backward()
             optimizer.step()
 
-        avg_epoch_loss = epoch_loss / len(data_loader)
-        print(f"Epoch [{epoch + 1}/{config.num_epochs}] | Loss: {avg_epoch_loss:.4f}")
+        training_loss = epoch_loss / len(data_loader)
+        print(f"Epoch [{epoch + 1}/{config.num_epochs}] | Loss: {training_loss:.4f}")
 
-        # --- Log metrics to TensorBoard ---
-        writer.add_scalar("Loss/train_epoch", avg_epoch_loss, epoch + 1)
-        writer.add_scalar(
-            "Parameters/learning_rate", optimizer.param_groups[0]["lr"], epoch + 1
-        )
+        # Log metrics to tensor board
+        writer.add_scalar("Loss/Train", training_loss, epoch + 1)
 
         # Save regular checkpoints
         if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == config.num_epochs:
@@ -334,13 +342,14 @@ def train(
 
     # Write hyperparameters after a successful run
     final_metrics = {
-        "Loss/train_epoch": avg_epoch_loss,
+        "hparam/train_loss": training_loss,
     }
     hparams_dict = asdict(config)
     hparams_dict["anchor_sizes"] = str(config.anchor_sizes)
     hparams_dict["anchor_aspect_ratios"] = str(config.anchor_aspect_ratios)
 
     writer.add_hparams(hparams_dict, final_metrics, run_name=".")
+    writer.flush()
     writer.close()
 
     # Final model path
