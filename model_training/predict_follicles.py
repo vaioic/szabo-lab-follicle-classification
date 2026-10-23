@@ -3,8 +3,12 @@ from pathlib import Path
 from shared import follicle_detector
 
 image_ids = [
-    "276196",
-    "276044",
+    "276146",
+    "276155",
+    "2761870",
+    "276231",
+    "276233",
+    "276260",
 ]
 
 image_folder = "../data/Dataset01/cropped_cleaned/"
@@ -24,7 +28,7 @@ print("Predicting boxes")
 follicle_detector.predict_follicles(
     model_path,
     img_file_list,
-    output_dir="../prediction/2026-10-22_Round4",
+    output_dir="../prediction/2026-10-22_Validation",
     confidence_thresh=0.5,
 )
 

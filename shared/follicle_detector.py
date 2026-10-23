@@ -32,6 +32,7 @@ class TrainingConfig:
     )
     anchor_aspect_ratios: tuple = (0.5, 1.0, 2.0)
     weights: str = "DEFAULT"
+    augment_images = False
 
 
 class FollicleImageDataset(Dataset):
@@ -69,7 +70,9 @@ class FollicleImageDataset(Dataset):
         No images matching the annotation files were found in the image_folder.
     """
 
-    def __init__(self, image_folder, annotation_folder, make_classes_binary=False):
+    def __init__(
+        self, image_folder, annotation_folder, make_classes_binary=False, augment=False
+    ):
 
         # Validate the inputs are valid paths
         image_folder = Path(image_folder)
@@ -130,6 +133,7 @@ class FollicleImageDataset(Dataset):
 
         # Get a list of the unique image names
         self.image_paths = list(self.df["image_path"].unique())
+        self.augment = augment
 
     def __len__(self):
         return len(self.image_paths)
@@ -147,6 +151,48 @@ class FollicleImageDataset(Dataset):
         labels_tensor = torch.tensor(labels, dtype=torch.int64)
 
         boxes = image_annotations[["XMin", "YMin", "XMax", "YMax"]].values
+        boxes = boxes.copy()
+
+        image = skimage.io.imread(image_path).copy()
+        height, width = image.shape[:2]
+
+        if self.augment:
+            # 1. Random Horizontal Flip (50% chance)
+            if torch.rand(1).item() > 0.5:
+                image = image[:, ::-1, :]
+                x_min = width - boxes[:, 2]
+                x_max = width - boxes[:, 0]
+                boxes[:, 0] = x_min
+                boxes[:, 2] = x_max
+
+            # 2. Random Vertical Flip (50% chance)
+            if torch.rand(1).item() > 0.5:
+                image = image[::-1, :, :]
+                y_min = height - boxes[:, 3]
+                y_max = height - boxes[:, 1]
+                boxes[:, 1] = y_min
+                boxes[:, 3] = y_max
+
+            # 3. Random 90-degree Rotations (0, 90, 180, or 270 degrees)
+            k = torch.randint(0, 4, (1,)).item()
+            if k > 0:
+                image = np.rot90(image, k, axes=(0, 1))
+                for _ in range(k):
+                    # For each 90-degree clockwise rotation, rotate the box coordinates
+                    # Width and Height swap during 90-deg rotations
+                    old_xmin, old_ymin, old_xmax, old_ymax = (
+                        boxes[:, 0],
+                        boxes[:, 1],
+                        boxes[:, 2],
+                        boxes[:, 3],
+                    )
+                    boxes[:, 0] = height - old_ymax
+                    boxes[:, 1] = old_xmin
+                    boxes[:, 2] = height - old_ymin
+                    boxes[:, 3] = old_xmax
+                    # Update height/width reference for subsequent 90-deg turns
+                    height, width = width, height
+
         boxes_tensor = torch.tensor(boxes, dtype=torch.float32)
 
         target = {
@@ -154,8 +200,6 @@ class FollicleImageDataset(Dataset):
             "labels": labels_tensor,
             "image_id": torch.tensor([idx]),
         }
-
-        image = skimage.io.imread(image_path).copy()
 
         # Convert image to tensor (C, H, W)
         img_tensor = torchvision.transforms.functional.to_tensor(image)
@@ -217,6 +261,8 @@ def train(
     image_folder,
     annotation_folder,
     base_output_dir,
+    validation_annotation_folder=None,
+    test_annotation_folder=None,
     model_name=None,
     save_every_n_epochs=5,
     checkpoint_path=None,
@@ -262,10 +308,32 @@ def train(
     # Load the data
     if config.num_classes == 2:
         dataset = FollicleImageDataset(
-            image_folder, annotation_folder, make_classes_binary=True
+            image_folder,
+            annotation_folder,
+            make_classes_binary=True,
+            augment=config.augment_images,
         )
     else:
-        dataset = FollicleImageDataset(image_folder, annotation_folder)
+        dataset = FollicleImageDataset(
+            image_folder, annotation_folder, augment=config.augment_images
+        )
+
+    if validation_annotation_folder is not None:
+        if config.num_classes == 2:
+            val_dataset = FollicleImageDataset(
+                image_folder, validation_annotation_folder, make_classes_binary=True
+            )
+        else:
+            val_dataset = FollicleImageDataset(
+                image_folder, validation_annotation_folder
+            )
+
+        val_data_loader = DataLoader(
+            val_dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            collate_fn=lambda x: tuple(zip(*x)),
+        )
 
     # Save class mapping
     if dataset.class_to_idx is not None:
@@ -334,6 +402,27 @@ def train(
         # Log metrics to tensor board
         writer.add_scalar("Loss/Train", training_loss, epoch + 1)
 
+        if validation_annotation_folder is not None:
+            val_loss = 0
+            with torch.no_grad():
+                for images, targets in val_data_loader:
+                    images = [image.to(device) for image in images]
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+                    val_loss_dict = model(images, targets)
+                    val_losses = sum(loss for loss in val_loss_dict.values())
+                    val_loss += val_losses.item()
+
+            validation_loss = (
+                val_loss / len(val_data_loader) if len(val_data_loader) > 0 else 0.0
+            )
+
+            print(
+                f"Epoch [{epoch + 1}/{config.num_epochs}] | Train Loss: {training_loss:.4f} | Val Loss: {validation_loss:.4f}"
+            )
+
+            writer.add_scalar("Loss/Validation", validation_loss, epoch + 1)
+
         # Save regular checkpoints
         if (epoch + 1) % save_every_n_epochs == 0 or (epoch + 1) == config.num_epochs:
             ckpt_path = output_dir / f"follicle_detector_epoch_{epoch + 1}.pth"
@@ -342,7 +431,7 @@ def train(
 
             log_validation_predictions(
                 model=model,
-                data_loader=data_loader,
+                data_loader=val_data_loader,
                 writer=writer,
                 epoch=epoch + 1,
                 device=device,
@@ -353,6 +442,9 @@ def train(
     final_metrics = {
         "hparam/train_loss": training_loss,
     }
+    if validation_annotation_folder is not None:
+        final_metrics["hparam/val_loss"] = validation_loss
+
     hparams_dict = asdict(config)
     hparams_dict["anchor_sizes"] = str(config.anchor_sizes)
     hparams_dict["anchor_aspect_ratios"] = str(config.anchor_aspect_ratios)
