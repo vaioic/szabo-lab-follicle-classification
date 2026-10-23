@@ -5,12 +5,12 @@ from shared import follicle_detector
 print("Training model...")
 model_path = follicle_detector.train(
     "../data/Dataset01/cropped_cleaned",
-    "../data/Dataset01/training_data/round3",
+    "../data/Dataset01/training_data/round4",
     "../models_v2",
     anchor_sizes=(
-        (48,),
-        (72,),
-        (192,),
+        (32,),
+        (64,),
+        (128,),
         (384,),
         (786,),
     ),
@@ -21,19 +21,19 @@ print("DONE")
 # Quick validation
 # model_path = "../models/2026-10-21_11-07-04/follicle_detector_final.pth"
 
-print("Predicting boxes")
-# Try prediction
-imgs = [
-    "../data/Dataset01/cropped_cleaned/276222_region0.png",
-    "../data/Dataset01/cropped_cleaned/276260_region0.png",
-    "../data/Dataset01/cropped_cleaned/276172_region0.png",
-]
+# print("Predicting boxes")
+# # Try prediction
+# imgs = [
+#     "../data/Dataset01/cropped_cleaned/276222_region0.png",
+#     "../data/Dataset01/cropped_cleaned/276260_region0.png",
+#     "../data/Dataset01/cropped_cleaned/276172_region0.png",
+# ]
 
-follicle_detector.predict_follicles(
-    model_path,
-    imgs,
-    output_dir="../prediction/2026-10-22_round3_validation",
-    confidence_thresh=0.7,
-)
+# follicle_detector.predict_follicles(
+#     model_path,
+#     imgs,
+#     output_dir="../prediction/2026-10-22_round3_validation",
+#     confidence_thresh=0.7,
+# )
 
-print("DONE")
+# print("DONE")

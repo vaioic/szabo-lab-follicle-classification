@@ -340,6 +340,15 @@ def train(
             torch.save(model.state_dict(), ckpt_path)
             print(f"-> Checkpoint saved: {ckpt_path}")
 
+            log_validation_predictions(
+                model=model,
+                data_loader=data_loader,
+                writer=writer,
+                epoch=epoch + 1,
+                device=device,
+                confidence_thresh=0.5,
+            )
+
     # Write hyperparameters after a successful run
     final_metrics = {
         "hparam/train_loss": training_loss,
@@ -489,3 +498,47 @@ def read_slide_image(image_path):
     img = img.convert("RGB")
 
     return img
+
+
+def log_validation_predictions(
+    model, data_loader, writer, epoch, device, confidence_thresh=0.5, max_images=3
+):
+    """
+    Runs model evaluation on a few validation/training samples, draws predicted bounding boxes,
+    and logs them to TensorBoard's Images tab.
+    """
+    model.eval()
+    with torch.no_grad():
+        for images, targets in data_loader:
+            images = [img.to(device) for img in images]
+
+            # Run inference
+            predictions = model(images)
+
+            logged_count = 0
+            for img_tensor, pred in zip(images, predictions):
+                if logged_count >= max_images:
+                    break
+
+                scores = pred["scores"]
+                keep = scores >= confidence_thresh
+                pred_boxes = pred["boxes"][keep].cpu()
+
+                # TensorBoard expects images in uint8 format [0, 255] (C, H, W)
+                img_uint8 = (img_tensor.cpu() * 255).to(torch.uint8)
+
+                if len(pred_boxes) > 0:
+                    drawn_img = torchvision.utils.draw_bounding_boxes(
+                        img_uint8, pred_boxes, colors="red", width=2
+                    )
+                else:
+                    drawn_img = img_uint8
+
+                # Send to TensorBoard Images tab
+                writer.add_image(
+                    f"Val_Predictions/image_{logged_count}", drawn_img, epoch
+                )
+                logged_count += 1
+
+            break  # Only process the first batch
+    model.train()  # Switch back to training mode
