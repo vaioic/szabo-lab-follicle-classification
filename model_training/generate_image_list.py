@@ -9,7 +9,7 @@ output_folder = Path("../data/Dataset01")
 
 reference_file = Path("../data/Dataset01/image_list.csv")
 
-annotation_folder = Path("../data/Dataset01/qupath_round2/export")
+annotation_folder = Path("../data/Dataset01/qupath_cropped/export")
 
 ref_data = pd.read_csv(reference_file)
 
