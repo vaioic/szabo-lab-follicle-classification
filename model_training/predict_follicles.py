@@ -3,10 +3,14 @@ from pathlib import Path
 from shared import follicle_detector
 
 image_ids = [
-    "276241",
-    "276242",
-    "276158",
-    "276157",
+    "276147",
+    "276161",
+    "276162",
+    "276148",
+    "276163",
+    "276164",
+    "276165",
+    "276166",
 ]
 
 image_folder = "../data/Dataset01/cropped_cleaned/"

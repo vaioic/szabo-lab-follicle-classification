@@ -14,9 +14,10 @@ model_path = follicle_detector.train(
         (500,),
         (900,),
     ),
-    num_epochs=10,
-    model_name="round2_16px_augment",
+    num_epochs=20,
+    model_name="7classes_16px_augment",
     augment=True,
-    learning_rate=0.0005,
+    learning_rate=0.001,
+    num_classes=7,
 )
 print("DONE")
