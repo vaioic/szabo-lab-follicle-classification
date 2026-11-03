@@ -34,6 +34,7 @@ class TrainingConfig:
     anchor_aspect_ratios: tuple = (0.5, 1.0, 2.0)
     weights: str = "DEFAULT"
     augment_images = False
+    # image_size: int =
 
 
 class FollicleImageDataset(Dataset):
@@ -125,8 +126,6 @@ class FollicleImageDataset(Dataset):
                 class_name: (idx + 1) for idx, class_name in enumerate(unique_classes)
             }
             self.df["class_id"] = self.df["Class"].map(self.class_to_idx)
-
-            print(self.class_to_idx)
 
         else:
             # This is primarily to train just an ROI proposer

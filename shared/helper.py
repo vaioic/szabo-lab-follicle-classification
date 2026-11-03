@@ -133,3 +133,18 @@ def detect_and_crop_tissue(
 
         # plt.imshow(overlay)
         # plt.show()
+
+
+def get_maximum_image_size(image_folder):
+
+    image_folder = Path(image_folder)
+    max_height = 0
+    max_width = 0
+
+    for img_path in image_folder.glob("*.png"):
+        with Image.open(img_path) as img:
+            w, h = img.size  # PIL returns (width, height)
+            max_width = max(max_width, w)
+            max_height = max(max_height, h)
+
+    return max_height, max_width
