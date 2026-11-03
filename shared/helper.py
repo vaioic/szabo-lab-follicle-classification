@@ -148,3 +148,11 @@ def get_maximum_image_size(image_folder):
             max_height = max(max_height, h)
 
     return max_height, max_width
+
+
+def split_image(image_folder, annotations_folder):
+
+    # Split an image into multiple tiles of the same size. We want to use overlapping
+    # tiles. Also only include bounding boxes where the center of the box is in the tile.
+
+    pass
