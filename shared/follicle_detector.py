@@ -79,13 +79,12 @@ class FollicleImageDataset(Dataset):
         image_folder = Path(image_folder)
 
         annotation_folder = Path(annotation_folder)
+        print(annotation_folder)
 
         list_annotation_files = list(annotation_folder.glob("*.csv"))
 
         if not list_annotation_files:
-            raise FileNotFoundError(
-                f"{annotation_folder.stem}: No CSV files were found"
-            )
+            raise FileNotFoundError(f"{annotation_folder}: No CSV files were found")
 
         # Parse the annotations, checking to make sure there is data and that the image
         # exists
@@ -126,6 +125,8 @@ class FollicleImageDataset(Dataset):
                 class_name: (idx + 1) for idx, class_name in enumerate(unique_classes)
             }
             self.df["class_id"] = self.df["Class"].map(self.class_to_idx)
+
+            print(self.class_to_idx)
 
         else:
             # This is primarily to train just an ROI proposer
