@@ -9,6 +9,7 @@ def count_follicles(annotation_folder, image_csv):
 
     csv_files = list(annotation_folder.glob("*.csv"))
 
+    image_df = []
     for f in csv_files:
         curr_df = pd.read_csv(f)
 
@@ -20,22 +21,44 @@ def count_follicles(annotation_folder, image_csv):
         curr_df["Image ID"] = int(image_id)
         curr_df["Region"] = int(region_id)
 
-        break
+        image_df.append(curr_df)
+
+    df_all = pd.concat(image_df)
 
     # Now read in the image csv file
     df_image = pd.read_csv(image_csv)
 
-    merged_df = pd.merge(curr_df, df_image, on="Image ID", how="inner")
+    merged_df = pd.merge(df_all, df_image, on="Image ID", how="inner")
 
-    print(merged_df)
+    # print(merged_df)
 
     class_counts = (
-        merged_df.groupby(["Region", "Barcode ID", "Class"])
+        merged_df.groupby(["Slide ID", "Region", "Class"])
         .size()
         .reset_index(name="Count")
     )
 
-    print(class_counts)
+    summary_df = class_counts.pivot_table(
+        index=["Slide ID", "Region"],
+        columns="Class",
+        values="Count",
+        aggfunc="sum",
+        fill_value=0,
+    ).reset_index()
+
+    expected_classes = ["Primordial", "Activated", "Primary 3a", "Primary 3b", "Antral"]
+    for col in expected_classes:
+        if col not in summary_df.columns:
+            summary_df[col] = 0
+
+    final_columns = ["Slide ID", "Region"] + expected_classes
+    summary_df = summary_df[final_columns]
+
+    summary_df.to_csv(
+        Path("../processed") / "2026-11-04 Counts_Pivoted.csv", index=False
+    )
+
+    # print(class_counts)
 
 
 # TODO: Concatenate with Barcode ID
